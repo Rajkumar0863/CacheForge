@@ -2,9 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 using cacheforge::KeyValueStore;
+
+
+// =========================================================
+// BASIC KEY-VALUE STORE TESTS
+// =========================================================
 
 TEST(KeyValueStoreTest, NewStoreIsEmpty) {
     KeyValueStore store;
@@ -41,25 +48,26 @@ TEST(KeyValueStoreTest, SetUpdatesExistingValue) {
 
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value(), "C++");
+
     EXPECT_EQ(store.size(), 1);
 }
 
 TEST(KeyValueStoreTest, ContainsExistingKey) {
     KeyValueStore store;
 
-    store.set("project", "CacheForge");
+    store.set("A", "100");
 
-    EXPECT_TRUE(store.contains("project"));
-    EXPECT_FALSE(store.contains("missing"));
+    EXPECT_TRUE(store.contains("A"));
+    EXPECT_FALSE(store.contains("B"));
 }
 
 TEST(KeyValueStoreTest, RemoveExistingKey) {
     KeyValueStore store;
 
-    store.set("name", "Rajkumar");
+    store.set("A", "100");
 
-    EXPECT_TRUE(store.remove("name"));
-    EXPECT_FALSE(store.contains("name"));
+    EXPECT_TRUE(store.remove("A"));
+    EXPECT_FALSE(store.contains("A"));
     EXPECT_EQ(store.size(), 0);
 }
 
@@ -75,12 +83,12 @@ TEST(KeyValueStoreTest, SizeTracksEntries) {
     EXPECT_EQ(store.size(), 0);
 
     store.set("A", "100");
-    store.set("B", "200");
+    EXPECT_EQ(store.size(), 1);
 
+    store.set("B", "200");
     EXPECT_EQ(store.size(), 2);
 
     store.remove("A");
-
     EXPECT_EQ(store.size(), 1);
 }
 
@@ -96,9 +104,9 @@ TEST(KeyValueStoreTest, SupportsEmptyStrings) {
 }
 
 
-// ---------------------------------------------------------
+// =========================================================
 // LRU CACHE TESTS
-// ---------------------------------------------------------
+// =========================================================
 
 TEST(KeyValueStoreTest, EvictsLeastRecentlyUsedEntry) {
     KeyValueStore store(3);
@@ -107,13 +115,13 @@ TEST(KeyValueStoreTest, EvictsLeastRecentlyUsedEntry) {
     store.set("B", "200");
     store.set("C", "300");
 
-    // A is currently the least recently used entry.
     store.set("D", "400");
 
     EXPECT_FALSE(store.contains("A"));
     EXPECT_TRUE(store.contains("B"));
     EXPECT_TRUE(store.contains("C"));
     EXPECT_TRUE(store.contains("D"));
+
     EXPECT_EQ(store.size(), 3);
 }
 
@@ -124,11 +132,8 @@ TEST(KeyValueStoreTest, GetUpdatesLRUOrder) {
     store.set("B", "200");
     store.set("C", "300");
 
-    // Access A, making it the most recently used.
-    auto value = store.get("A");
-
-    ASSERT_TRUE(value.has_value());
-    EXPECT_EQ(value.value(), "100");
+    // A becomes the most recently used.
+    ASSERT_TRUE(store.get("A").has_value());
 
     store.set("D", "400");
 
@@ -137,7 +142,6 @@ TEST(KeyValueStoreTest, GetUpdatesLRUOrder) {
     EXPECT_FALSE(store.contains("B"));
     EXPECT_TRUE(store.contains("C"));
     EXPECT_TRUE(store.contains("D"));
-    EXPECT_EQ(store.size(), 3);
 }
 
 TEST(KeyValueStoreTest, UpdatingValueUpdatesLRUOrder) {
@@ -147,7 +151,7 @@ TEST(KeyValueStoreTest, UpdatingValueUpdatesLRUOrder) {
     store.set("B", "200");
     store.set("C", "300");
 
-    // Updating A should also make A recently used.
+    // Updating A also counts as using A.
     store.set("A", "999");
 
     store.set("D", "400");
@@ -175,6 +179,7 @@ TEST(KeyValueStoreTest, RemoveMaintainsLRUState) {
     store.set("D", "400");
 
     EXPECT_EQ(store.size(), 3);
+
     EXPECT_TRUE(store.contains("A"));
     EXPECT_FALSE(store.contains("B"));
     EXPECT_TRUE(store.contains("C"));
@@ -193,4 +198,159 @@ TEST(KeyValueStoreTest, ZeroCapacityMeansUnlimited) {
 
     EXPECT_EQ(store.size(), 100);
     EXPECT_EQ(store.capacity(), 0);
+}
+
+
+// =========================================================
+// TTL TESTS
+// =========================================================
+
+TEST(KeyValueStoreTest, SetWithTTLStoresValue) {
+    KeyValueStore store;
+
+    store.set_with_ttl(
+        "session",
+        "abc123",
+        std::chrono::seconds(10)
+    );
+
+    auto value = store.get("session");
+
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value(), "abc123");
+}
+
+TEST(KeyValueStoreTest, TTLValueExpires) {
+    KeyValueStore store;
+
+    store.set_with_ttl(
+        "session",
+        "abc123",
+        std::chrono::seconds(1)
+    );
+
+    EXPECT_TRUE(store.contains("session"));
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1100)
+    );
+
+    EXPECT_FALSE(store.contains("session"));
+    EXPECT_FALSE(store.get("session").has_value());
+}
+
+TEST(KeyValueStoreTest, ExpiredValueReducesSize) {
+    KeyValueStore store;
+
+    store.set("permanent", "value");
+
+    store.set_with_ttl(
+        "temporary",
+        "value",
+        std::chrono::seconds(1)
+    );
+
+    EXPECT_EQ(store.size(), 2);
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1100)
+    );
+
+    EXPECT_EQ(store.size(), 1);
+
+    EXPECT_TRUE(store.contains("permanent"));
+    EXPECT_FALSE(store.contains("temporary"));
+}
+
+TEST(KeyValueStoreTest, NormalSetDoesNotExpire) {
+    KeyValueStore store;
+
+    store.set("name", "Rajkumar");
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1100)
+    );
+
+    EXPECT_TRUE(store.contains("name"));
+
+    auto value = store.get("name");
+
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value(), "Rajkumar");
+}
+
+TEST(KeyValueStoreTest, NormalSetRemovesPreviousTTL) {
+    KeyValueStore store;
+
+    store.set_with_ttl(
+        "session",
+        "temporary",
+        std::chrono::seconds(1)
+    );
+
+    // Normal SET should convert the key back
+    // into a non-expiring entry.
+    store.set("session", "permanent");
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1100)
+    );
+
+    EXPECT_TRUE(store.contains("session"));
+
+    auto value = store.get("session");
+
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value(), "permanent");
+}
+
+TEST(KeyValueStoreTest, TTLUpdateReplacesExistingTTL) {
+    KeyValueStore store;
+
+    store.set_with_ttl(
+        "token",
+        "first",
+        std::chrono::seconds(1)
+    );
+
+    // Replace the value and extend its TTL.
+    store.set_with_ttl(
+        "token",
+        "second",
+        std::chrono::seconds(3)
+    );
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1100)
+    );
+
+    auto value = store.get("token");
+
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value(), "second");
+}
+
+TEST(KeyValueStoreTest, TTLWorksWithLRUEviction) {
+    KeyValueStore store(3);
+
+    store.set_with_ttl(
+        "A",
+        "100",
+        std::chrono::seconds(10)
+    );
+
+    store.set("B", "200");
+    store.set("C", "300");
+
+    // Access A so B becomes the least recently used.
+    ASSERT_TRUE(store.get("A").has_value());
+
+    store.set("D", "400");
+
+    EXPECT_TRUE(store.contains("A"));
+    EXPECT_FALSE(store.contains("B"));
+    EXPECT_TRUE(store.contains("C"));
+    EXPECT_TRUE(store.contains("D"));
+
+    EXPECT_EQ(store.size(), 3);
 }

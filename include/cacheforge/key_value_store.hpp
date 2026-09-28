@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <list>
 #include <optional>
@@ -15,55 +16,93 @@ public:
     explicit KeyValueStore(std::size_t capacity = 0);
 
     // Insert a new key-value pair or update an existing key.
-    // If the cache is full, the least recently used key is evicted.
-    void set(const std::string& key, const std::string& value);
+    // A normal SET has no TTL.
+    void set(
+        const std::string& key,
+        const std::string& value
+    );
+
+    // Insert or update a key with a Time-To-Live.
+    // The key expires after the specified duration.
+    void set_with_ttl(
+        const std::string& key,
+        const std::string& value,
+        std::chrono::seconds ttl
+    );
 
     // Return the value associated with the key.
     // Accessing a key marks it as recently used.
-    // Returns std::nullopt if the key does not exist.
-    std::optional<std::string> get(const std::string& key);
+    // Returns std::nullopt if the key does not exist or has expired.
+    std::optional<std::string> get(
+        const std::string& key
+    );
 
-    // Remove a key from the store.
-    // Returns true if the key existed and was removed.
-    bool remove(const std::string& key);
+    // Remove a key.
+    // Returns true if the key existed.
+    bool remove(
+        const std::string& key
+    );
 
-    // Check whether a key exists in the store.
-    bool contains(const std::string& key) const;
+    // Check whether a key currently exists.
+    // Expired keys are treated as missing.
+    bool contains(
+        const std::string& key
+    );
 
-    // Return the number of key-value pairs currently stored.
-    std::size_t size() const;
+    // Return the number of currently valid entries.
+    std::size_t size();
 
-    // Return the maximum capacity of the cache.
-    // 0 means unlimited capacity.
+    // Return the configured maximum capacity.
+    // 0 means unlimited.
     std::size_t capacity() const;
 
 private:
+    using Clock = std::chrono::steady_clock;
+
     struct Entry {
         std::string value;
-
-        // Points to this key's position in the LRU list.
         std::list<std::string>::iterator lru_iterator;
     };
 
-    // Move an existing key to the most-recently-used position.
-    void mark_as_recently_used(
-        std::unordered_map<std::string, Entry>::iterator entry);
+    // Main key-value storage.
+    std::unordered_map<std::string, Entry> data_;
 
-    // Remove the least recently used key when capacity is reached.
-    void evict_if_needed();
+    // LRU ordering.
+    // Front = least recently used.
+    // Back = most recently used.
+    std::list<std::string> lru_order_;
 
-    // Maximum number of entries.
+    // Expiration timestamps.
+    // Keys without TTL are not stored here.
+    std::unordered_map<
+        std::string,
+        Clock::time_point
+    > expiry_;
+
+    // Maximum cache capacity.
     // 0 means unlimited.
     std::size_t capacity_;
 
-    // Hash table provides average O(1) key lookup.
-    std::unordered_map<std::string, Entry> data_;
+    // Move an entry to the most-recently-used position.
+    void mark_as_recently_used(
+        std::unordered_map<std::string, Entry>::iterator entry
+    );
 
-    // Tracks usage order.
-    //
-    // front = least recently used
-    // back  = most recently used
-    std::list<std::string> lru_order_;
+    // Evict least-recently-used entries when necessary.
+    void evict_if_needed();
+
+    // Check whether a key's TTL has expired.
+    bool is_expired(
+        const std::string& key
+    ) const;
+
+    // Completely remove a key from all internal structures.
+    void erase_key(
+        const std::string& key
+    );
+
+    // Remove all expired entries.
+    void cleanup_expired();
 };
 
 } // namespace cacheforge
