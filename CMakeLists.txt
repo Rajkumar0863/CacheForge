@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+
 # ============================================================
 # CacheForge core library
 # ============================================================
@@ -22,6 +23,7 @@ target_include_directories(cacheforge
         ${PROJECT_SOURCE_DIR}/include
 )
 
+
 # ============================================================
 # Command-line application
 # ============================================================
@@ -34,6 +36,21 @@ target_link_libraries(cacheforge_cli
     PRIVATE
         cacheforge
 )
+
+
+# ============================================================
+# Benchmark executable
+# ============================================================
+
+add_executable(cacheforge_benchmark
+    benchmarks/cache_benchmark.cpp
+)
+
+target_link_libraries(cacheforge_benchmark
+    PRIVATE
+        cacheforge
+)
+
 
 # ============================================================
 # Testing
