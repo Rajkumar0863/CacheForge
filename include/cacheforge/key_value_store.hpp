@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <list>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -16,14 +17,13 @@ public:
     explicit KeyValueStore(std::size_t capacity = 0);
 
     // Insert a new key-value pair or update an existing key.
-    // A normal SET has no TTL.
+    // A normal SET removes any existing TTL.
     void set(
         const std::string& key,
         const std::string& value
     );
 
     // Insert or update a key with a Time-To-Live.
-    // The key expires after the specified duration.
     void set_with_ttl(
         const std::string& key,
         const std::string& value,
@@ -31,8 +31,8 @@ public:
     );
 
     // Return the value associated with the key.
-    // Accessing a key marks it as recently used.
-    // Returns std::nullopt if the key does not exist or has expired.
+    // Accessing a key updates its LRU position.
+    // Returns std::nullopt if the key is missing or expired.
     std::optional<std::string> get(
         const std::string& key
     );
@@ -67,13 +67,12 @@ private:
     // Main key-value storage.
     std::unordered_map<std::string, Entry> data_;
 
-    // LRU ordering.
-    // Front = least recently used.
-    // Back = most recently used.
+    // LRU ordering:
+    // front = least recently used
+    // back  = most recently used
     std::list<std::string> lru_order_;
 
-    // Expiration timestamps.
-    // Keys without TTL are not stored here.
+    // Expiration timestamps for TTL-enabled keys.
     std::unordered_map<
         std::string,
         Clock::time_point
@@ -83,20 +82,33 @@ private:
     // 0 means unlimited.
     std::size_t capacity_;
 
+    // Protects all shared cache state:
+    // data_, lru_order_, expiry_, and capacity-related operations.
+    mutable std::mutex mutex_;
+
+    // -----------------------------------------------------
+    // Internal helpers
+    //
+    // IMPORTANT:
+    // These helpers DO NOT acquire mutex_ themselves.
+    // They are called while the public method already owns
+    // the lock. This prevents recursive locking/deadlocks.
+    // -----------------------------------------------------
+
     // Move an entry to the most-recently-used position.
     void mark_as_recently_used(
         std::unordered_map<std::string, Entry>::iterator entry
     );
 
-    // Evict least-recently-used entries when necessary.
+    // Evict least-recently-used entries when capacity is exceeded.
     void evict_if_needed();
 
-    // Check whether a key's TTL has expired.
+    // Check whether a key has expired.
     bool is_expired(
         const std::string& key
     ) const;
 
-    // Completely remove a key from all internal structures.
+    // Remove a key from all internal structures.
     void erase_key(
         const std::string& key
     );

@@ -1,6 +1,8 @@
 #include "cacheforge/key_value_store.hpp"
 
 #include <chrono>
+#include <iterator>
+#include <mutex>
 
 namespace cacheforge {
 
@@ -12,12 +14,14 @@ void KeyValueStore::set(
     const std::string& key,
     const std::string& value
 ) {
-    // A normal SET removes any previous TTL from this key.
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // A normal SET removes any previous TTL.
     expiry_.erase(key);
 
     auto it = data_.find(key);
 
-    // Key already exists: update its value and mark it as recently used.
+    // Update an existing entry.
     if (it != data_.end()) {
         it->second.value = value;
         mark_as_recently_used(it);
@@ -45,16 +49,18 @@ void KeyValueStore::set_with_ttl(
     const std::string& value,
     std::chrono::seconds ttl
 ) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     auto it = data_.find(key);
 
     if (it != data_.end()) {
         // Update existing value.
         it->second.value = value;
 
-        // Mark it as recently used.
+        // Updating also counts as using the key.
         mark_as_recently_used(it);
     } else {
-        // Insert new key into LRU list.
+        // Insert new key into the LRU list.
         lru_order_.push_back(key);
 
         auto lru_iterator = std::prev(lru_order_.end());
@@ -68,7 +74,7 @@ void KeyValueStore::set_with_ttl(
         );
     }
 
-    // Store the expiration time.
+    // Store/update expiration timestamp.
     expiry_[key] = Clock::now() + ttl;
 
     evict_if_needed();
@@ -76,44 +82,49 @@ void KeyValueStore::set_with_ttl(
 
 std::optional<std::string>
 KeyValueStore::get(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     auto it = data_.find(key);
 
     if (it == data_.end()) {
         return std::nullopt;
     }
 
-    // If the key has expired, remove it completely.
+    // Expired entries behave as if they do not exist.
     if (is_expired(key)) {
         erase_key(key);
         return std::nullopt;
     }
 
-    // Reading a key counts as using it.
+    // GET changes the LRU ordering.
     mark_as_recently_used(it);
 
     return it->second.value;
 }
 
 bool KeyValueStore::remove(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     auto it = data_.find(key);
 
     if (it == data_.end()) {
         return false;
     }
 
-    // Remove from LRU tracking.
-    lru_order_.erase(it->second.lru_iterator);
+    // If the key has expired, remove it and report it as missing.
+    if (is_expired(key)) {
+        erase_key(key);
+        return false;
+    }
 
-    // Remove TTL information if present.
-    expiry_.erase(key);
-
-    // Remove actual entry.
-    data_.erase(it);
+    erase_key(key);
 
     return true;
 }
 
 bool KeyValueStore::contains(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     auto it = data_.find(key);
 
     if (it == data_.end()) {
@@ -129,31 +140,43 @@ bool KeyValueStore::contains(const std::string& key) {
 }
 
 std::size_t KeyValueStore::size() {
-    // Remove expired entries before reporting the size.
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Do not count expired entries.
     cleanup_expired();
 
     return data_.size();
 }
 
 std::size_t KeyValueStore::capacity() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     return capacity_;
 }
 
 void KeyValueStore::mark_as_recently_used(
     std::unordered_map<std::string, Entry>::iterator entry
 ) {
-    // Move the existing node to the most-recently-used end.
+    // IMPORTANT:
+    // mutex_ is already owned by the calling public method.
+
     lru_order_.splice(
         lru_order_.end(),
         lru_order_,
         entry->second.lru_iterator
     );
 
-    entry->second.lru_iterator = std::prev(lru_order_.end());
+    entry->second.lru_iterator =
+        std::prev(lru_order_.end());
 }
 
 void KeyValueStore::evict_if_needed() {
-    // First clear expired entries.
+    // IMPORTANT:
+    // Do not lock mutex_ here.
+    // The caller already owns the lock.
+
+    // Expired entries should be removed before
+    // capacity-based eviction occurs.
     cleanup_expired();
 
     // capacity == 0 means unlimited.
@@ -162,24 +185,25 @@ void KeyValueStore::evict_if_needed() {
     }
 
     while (data_.size() > capacity_) {
-        // Front contains the least recently used key.
-        std::string key_to_evict = lru_order_.front();
+        // Front = least recently used.
+        const std::string key_to_evict =
+            lru_order_.front();
 
-        // Remove TTL metadata if it exists.
         expiry_.erase(key_to_evict);
-
-        // Remove actual entry.
         data_.erase(key_to_evict);
-
-        // Remove from LRU list.
         lru_order_.pop_front();
     }
 }
 
-bool KeyValueStore::is_expired(const std::string& key) const {
+bool KeyValueStore::is_expired(
+    const std::string& key
+) const {
+    // IMPORTANT:
+    // Caller already owns mutex_.
+
     auto expiry_it = expiry_.find(key);
 
-    // No expiry entry means this key lives indefinitely.
+    // No TTL entry means the key does not expire.
     if (expiry_it == expiry_.end()) {
         return false;
     }
@@ -187,26 +211,35 @@ bool KeyValueStore::is_expired(const std::string& key) const {
     return Clock::now() >= expiry_it->second;
 }
 
-void KeyValueStore::erase_key(const std::string& key) {
+void KeyValueStore::erase_key(
+    const std::string& key
+) {
+    // IMPORTANT:
+    // Caller already owns mutex_.
+
     auto it = data_.find(key);
 
     if (it == data_.end()) {
-        // Clean stale expiry information just in case.
         expiry_.erase(key);
         return;
     }
 
-    // Remove from LRU list.
-    lru_order_.erase(it->second.lru_iterator);
+    // Remove from LRU ordering.
+    lru_order_.erase(
+        it->second.lru_iterator
+    );
 
     // Remove TTL metadata.
     expiry_.erase(key);
 
-    // Remove actual key-value entry.
+    // Remove actual entry.
     data_.erase(it);
 }
 
 void KeyValueStore::cleanup_expired() {
+    // IMPORTANT:
+    // Caller already owns mutex_.
+
     auto it = expiry_.begin();
 
     while (it != expiry_.end()) {
@@ -216,7 +249,10 @@ void KeyValueStore::cleanup_expired() {
             auto data_it = data_.find(key);
 
             if (data_it != data_.end()) {
-                lru_order_.erase(data_it->second.lru_iterator);
+                lru_order_.erase(
+                    data_it->second.lru_iterator
+                );
+
                 data_.erase(data_it);
             }
 
