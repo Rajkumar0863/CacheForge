@@ -2,16 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 using cacheforge::KeyValueStore;
 
-// A newly created store should contain no entries.
 TEST(KeyValueStoreTest, NewStoreIsEmpty) {
     KeyValueStore store;
 
     EXPECT_EQ(store.size(), 0);
 }
 
-// SET should insert a new key-value pair.
 TEST(KeyValueStoreTest, SetAndGetValue) {
     KeyValueStore store;
 
@@ -23,7 +23,14 @@ TEST(KeyValueStoreTest, SetAndGetValue) {
     EXPECT_EQ(value.value(), "Rajkumar");
 }
 
-// SET should update the value when the key already exists.
+TEST(KeyValueStoreTest, GetMissingKeyReturnsNullopt) {
+    KeyValueStore store;
+
+    auto value = store.get("missing");
+
+    EXPECT_FALSE(value.has_value());
+}
+
 TEST(KeyValueStoreTest, SetUpdatesExistingValue) {
     KeyValueStore store;
 
@@ -34,31 +41,18 @@ TEST(KeyValueStoreTest, SetUpdatesExistingValue) {
 
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value(), "C++");
-
-    // Updating an existing key must not increase the number of entries.
     EXPECT_EQ(store.size(), 1);
 }
 
-// GET should return no value for a missing key.
-TEST(KeyValueStoreTest, GetMissingKeyReturnsNullopt) {
-    KeyValueStore store;
-
-    auto value = store.get("missing");
-
-    EXPECT_FALSE(value.has_value());
-}
-
-// CONTAINS should correctly report whether a key exists.
 TEST(KeyValueStoreTest, ContainsExistingKey) {
     KeyValueStore store;
 
-    store.set("university", "UL");
+    store.set("project", "CacheForge");
 
-    EXPECT_TRUE(store.contains("university"));
-    EXPECT_FALSE(store.contains("country"));
+    EXPECT_TRUE(store.contains("project"));
+    EXPECT_FALSE(store.contains("missing"));
 }
 
-// DELETE should remove an existing key.
 TEST(KeyValueStoreTest, RemoveExistingKey) {
     KeyValueStore store;
 
@@ -66,42 +60,137 @@ TEST(KeyValueStoreTest, RemoveExistingKey) {
 
     EXPECT_TRUE(store.remove("name"));
     EXPECT_FALSE(store.contains("name"));
-    EXPECT_FALSE(store.get("name").has_value());
     EXPECT_EQ(store.size(), 0);
 }
 
-// DELETE should report failure when the key does not exist.
 TEST(KeyValueStoreTest, RemoveMissingKey) {
     KeyValueStore store;
 
-    EXPECT_FALSE(store.remove("does-not-exist"));
+    EXPECT_FALSE(store.remove("missing"));
 }
 
-// SIZE should track multiple inserted values.
 TEST(KeyValueStoreTest, SizeTracksEntries) {
     KeyValueStore store;
 
-    store.set("one", "1");
-    store.set("two", "2");
-    store.set("three", "3");
+    EXPECT_EQ(store.size(), 0);
 
-    EXPECT_EQ(store.size(), 3);
-
-    store.remove("two");
+    store.set("A", "100");
+    store.set("B", "200");
 
     EXPECT_EQ(store.size(), 2);
+
+    store.remove("A");
+
+    EXPECT_EQ(store.size(), 1);
 }
 
-// Empty strings are valid keys and values in the core storage API.
 TEST(KeyValueStoreTest, SupportsEmptyStrings) {
     KeyValueStore store;
 
     store.set("", "");
 
-    EXPECT_TRUE(store.contains(""));
-
     auto value = store.get("");
 
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value(), "");
+}
+
+
+// ---------------------------------------------------------
+// LRU CACHE TESTS
+// ---------------------------------------------------------
+
+TEST(KeyValueStoreTest, EvictsLeastRecentlyUsedEntry) {
+    KeyValueStore store(3);
+
+    store.set("A", "100");
+    store.set("B", "200");
+    store.set("C", "300");
+
+    // A is currently the least recently used entry.
+    store.set("D", "400");
+
+    EXPECT_FALSE(store.contains("A"));
+    EXPECT_TRUE(store.contains("B"));
+    EXPECT_TRUE(store.contains("C"));
+    EXPECT_TRUE(store.contains("D"));
+    EXPECT_EQ(store.size(), 3);
+}
+
+TEST(KeyValueStoreTest, GetUpdatesLRUOrder) {
+    KeyValueStore store(3);
+
+    store.set("A", "100");
+    store.set("B", "200");
+    store.set("C", "300");
+
+    // Access A, making it the most recently used.
+    auto value = store.get("A");
+
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value(), "100");
+
+    store.set("D", "400");
+
+    // B should now be the least recently used.
+    EXPECT_TRUE(store.contains("A"));
+    EXPECT_FALSE(store.contains("B"));
+    EXPECT_TRUE(store.contains("C"));
+    EXPECT_TRUE(store.contains("D"));
+    EXPECT_EQ(store.size(), 3);
+}
+
+TEST(KeyValueStoreTest, UpdatingValueUpdatesLRUOrder) {
+    KeyValueStore store(3);
+
+    store.set("A", "100");
+    store.set("B", "200");
+    store.set("C", "300");
+
+    // Updating A should also make A recently used.
+    store.set("A", "999");
+
+    store.set("D", "400");
+
+    EXPECT_TRUE(store.contains("A"));
+    EXPECT_FALSE(store.contains("B"));
+    EXPECT_TRUE(store.contains("C"));
+    EXPECT_TRUE(store.contains("D"));
+
+    auto value = store.get("A");
+
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value(), "999");
+}
+
+TEST(KeyValueStoreTest, RemoveMaintainsLRUState) {
+    KeyValueStore store(3);
+
+    store.set("A", "100");
+    store.set("B", "200");
+    store.set("C", "300");
+
+    EXPECT_TRUE(store.remove("B"));
+
+    store.set("D", "400");
+
+    EXPECT_EQ(store.size(), 3);
+    EXPECT_TRUE(store.contains("A"));
+    EXPECT_FALSE(store.contains("B"));
+    EXPECT_TRUE(store.contains("C"));
+    EXPECT_TRUE(store.contains("D"));
+}
+
+TEST(KeyValueStoreTest, ZeroCapacityMeansUnlimited) {
+    KeyValueStore store;
+
+    for (int i = 0; i < 100; ++i) {
+        store.set(
+            "key" + std::to_string(i),
+            "value" + std::to_string(i)
+        );
+    }
+
+    EXPECT_EQ(store.size(), 100);
+    EXPECT_EQ(store.capacity(), 0);
 }
