@@ -5,6 +5,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -51,7 +53,6 @@ TEST(KeyValueStoreTest, SetUpdatesExistingValue) {
 
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value(), "C++");
-
     EXPECT_EQ(store.size(), 1U);
 }
 
@@ -118,7 +119,6 @@ TEST(KeyValueStoreTest, EvictsLeastRecentlyUsedEntry) {
     store.set("B", "200");
     store.set("C", "300");
 
-    // A is the least recently used.
     store.set("D", "400");
 
     EXPECT_FALSE(store.contains("A"));
@@ -136,13 +136,11 @@ TEST(KeyValueStoreTest, GetUpdatesLRUOrder) {
     store.set("B", "200");
     store.set("C", "300");
 
-    // Access A, making it the most recently used.
     auto value = store.get("A");
 
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value(), "100");
 
-    // B should now be the least recently used.
     store.set("D", "400");
 
     EXPECT_TRUE(store.contains("A"));
@@ -160,7 +158,6 @@ TEST(KeyValueStoreTest, UpdatingValueUpdatesLRUOrder) {
     store.set("B", "200");
     store.set("C", "300");
 
-    // Updating A also counts as using A.
     store.set("A", "999");
 
     store.set("D", "400");
@@ -266,7 +263,6 @@ TEST(KeyValueStoreTest, ExpiredValueReducesSize) {
     );
 
     EXPECT_EQ(store.size(), 1U);
-
     EXPECT_TRUE(store.contains("permanent"));
     EXPECT_FALSE(store.contains("temporary"));
 }
@@ -297,8 +293,10 @@ TEST(KeyValueStoreTest, NormalSetRemovesPreviousTTL) {
         std::chrono::seconds(1)
     );
 
-    // Normal SET should remove the previous TTL.
-    store.set("session", "permanent");
+    store.set(
+        "session",
+        "permanent"
+    );
 
     std::this_thread::sleep_for(
         std::chrono::milliseconds(1100)
@@ -321,7 +319,6 @@ TEST(KeyValueStoreTest, TTLUpdateReplacesExistingTTL) {
         std::chrono::seconds(1)
     );
 
-    // Replace the old value and extend its TTL.
     store.set_with_ttl(
         "token",
         "second",
@@ -350,12 +347,10 @@ TEST(KeyValueStoreTest, TTLWorksWithLRUEviction) {
     store.set("B", "200");
     store.set("C", "300");
 
-    // A becomes the most recently used.
     auto value = store.get("A");
 
     ASSERT_TRUE(value.has_value());
 
-    // B should now be evicted.
     store.set("D", "400");
 
     EXPECT_TRUE(store.contains("A"));
@@ -426,7 +421,6 @@ TEST(KeyValueStoreTest, ConcurrentReadersAndWriters) {
     constexpr int writer_count = 4;
     constexpr int reader_count = 4;
 
-    // Populate the store before concurrent access begins.
     for (int i = 0; i < key_count; ++i) {
         store.set(
             "key_" + std::to_string(i),
@@ -436,7 +430,6 @@ TEST(KeyValueStoreTest, ConcurrentReadersAndWriters) {
 
     std::vector<std::thread> threads;
 
-    // Writers update existing keys.
     for (
         int writer = 0;
         writer < writer_count;
@@ -459,7 +452,6 @@ TEST(KeyValueStoreTest, ConcurrentReadersAndWriters) {
         );
     }
 
-    // Readers access the same keys concurrently.
     for (
         int reader = 0;
         reader < reader_count;
@@ -543,7 +535,6 @@ TEST(KeyValueStoreTest, ConcurrentSetGetAndRemove) {
 
     constexpr int operation_count = 1000;
 
-    // All workers wait until this becomes true.
     std::atomic<bool> start{false};
 
     std::thread writer(
@@ -601,15 +592,12 @@ TEST(KeyValueStoreTest, ConcurrentSetGetAndRemove) {
         }
     );
 
-    // Release all three workers.
     start.store(true);
 
     writer.join();
     reader.join();
     remover.join();
 
-    // Exact final size depends on thread scheduling.
-    // The cache must remain internally valid.
     EXPECT_LE(
         store.size(),
         static_cast<std::size_t>(operation_count)
@@ -709,5 +697,511 @@ TEST(KeyValueStoreTest, ConcurrentTTLWrites) {
         static_cast<std::size_t>(
             thread_count * entries_per_thread
         )
+    );
+}
+
+
+// =========================================================
+// PERSISTENCE TESTS
+// =========================================================
+
+TEST(KeyValueStoreTest, SaveAndLoadSingleEntry) {
+    const std::string filename =
+        "test_single.cache";
+
+    {
+        KeyValueStore store;
+
+        store.set(
+            "name",
+            "Rajkumar"
+        );
+
+        ASSERT_TRUE(
+            store.save(filename)
+        );
+    }
+
+    {
+        KeyValueStore store;
+
+        ASSERT_TRUE(
+            store.load(filename)
+        );
+
+        auto value =
+            store.get("name");
+
+        ASSERT_TRUE(
+            value.has_value()
+        );
+
+        EXPECT_EQ(
+            value.value(),
+            "Rajkumar"
+        );
+    }
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, SaveAndLoadMultipleEntries) {
+    const std::string filename =
+        "test_multiple.cache";
+
+    {
+        KeyValueStore store;
+
+        store.set("A", "100");
+        store.set("B", "200");
+        store.set("C", "300");
+
+        ASSERT_TRUE(
+            store.save(filename)
+        );
+    }
+
+    {
+        KeyValueStore store;
+
+        ASSERT_TRUE(
+            store.load(filename)
+        );
+
+        EXPECT_EQ(
+            store.size(),
+            3U
+        );
+
+        auto a = store.get("A");
+        auto b = store.get("B");
+        auto c = store.get("C");
+
+        ASSERT_TRUE(a.has_value());
+        ASSERT_TRUE(b.has_value());
+        ASSERT_TRUE(c.has_value());
+
+        EXPECT_EQ(a.value(), "100");
+        EXPECT_EQ(b.value(), "200");
+        EXPECT_EQ(c.value(), "300");
+    }
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, LoadReplacesExistingState) {
+    const std::string filename =
+        "test_replace.cache";
+
+    {
+        KeyValueStore source;
+
+        source.set(
+            "disk_key",
+            "disk_value"
+        );
+
+        ASSERT_TRUE(
+            source.save(filename)
+        );
+    }
+
+    KeyValueStore store;
+
+    store.set(
+        "memory_key",
+        "memory_value"
+    );
+
+    ASSERT_TRUE(
+        store.load(filename)
+    );
+
+    EXPECT_FALSE(
+        store.contains("memory_key")
+    );
+
+    EXPECT_TRUE(
+        store.contains("disk_key")
+    );
+
+    EXPECT_EQ(
+        store.size(),
+        1U
+    );
+
+    auto value =
+        store.get("disk_key");
+
+    ASSERT_TRUE(
+        value.has_value()
+    );
+
+    EXPECT_EQ(
+        value.value(),
+        "disk_value"
+    );
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, LoadMissingFileReturnsFalse) {
+    const std::string filename =
+        "cacheforge_file_that_does_not_exist.cache";
+
+    std::remove(
+        filename.c_str()
+    );
+
+    KeyValueStore store;
+
+    EXPECT_FALSE(
+        store.load(filename)
+    );
+}
+
+TEST(KeyValueStoreTest, FailedLoadDoesNotDestroyExistingState) {
+    const std::string filename =
+        "test_corrupt.cache";
+
+    {
+        std::ofstream file(filename);
+
+        file
+            << "THIS_IS_NOT_A_CACHEFORGE_FILE\n"
+            << "garbage\n";
+    }
+
+    KeyValueStore store;
+
+    store.set(
+        "existing",
+        "value"
+    );
+
+    EXPECT_FALSE(
+        store.load(filename)
+    );
+
+    EXPECT_TRUE(
+        store.contains("existing")
+    );
+
+    auto value =
+        store.get("existing");
+
+    ASSERT_TRUE(
+        value.has_value()
+    );
+
+    EXPECT_EQ(
+        value.value(),
+        "value"
+    );
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, PersistenceSupportsSpaces) {
+    const std::string filename =
+        "test_spaces.cache";
+
+    {
+        KeyValueStore store;
+
+        store.set(
+            "full name",
+            "Rajkumar Vijayan"
+        );
+
+        store.set(
+            "message",
+            "CacheForge persistence works"
+        );
+
+        ASSERT_TRUE(
+            store.save(filename)
+        );
+    }
+
+    {
+        KeyValueStore store;
+
+        ASSERT_TRUE(
+            store.load(filename)
+        );
+
+        auto name =
+            store.get("full name");
+
+        auto message =
+            store.get("message");
+
+        ASSERT_TRUE(
+            name.has_value()
+        );
+
+        ASSERT_TRUE(
+            message.has_value()
+        );
+
+        EXPECT_EQ(
+            name.value(),
+            "Rajkumar Vijayan"
+        );
+
+        EXPECT_EQ(
+            message.value(),
+            "CacheForge persistence works"
+        );
+    }
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, PersistencePreservesLRUOrder) {
+    const std::string filename =
+        "test_lru.cache";
+
+    {
+        KeyValueStore store(3);
+
+        store.set("A", "100");
+        store.set("B", "200");
+        store.set("C", "300");
+
+        // LRU order after inserts:
+        //
+        // A -> B -> C
+        //
+        // Access A:
+        //
+        // B -> C -> A
+        auto value =
+            store.get("A");
+
+        ASSERT_TRUE(
+            value.has_value()
+        );
+
+        ASSERT_TRUE(
+            store.save(filename)
+        );
+    }
+
+    {
+        KeyValueStore store(3);
+
+        ASSERT_TRUE(
+            store.load(filename)
+        );
+
+        // If LRU order was restored correctly,
+        // B is still the least recently used.
+        store.set(
+            "D",
+            "400"
+        );
+
+        EXPECT_TRUE(
+            store.contains("A")
+        );
+
+        EXPECT_FALSE(
+            store.contains("B")
+        );
+
+        EXPECT_TRUE(
+            store.contains("C")
+        );
+
+        EXPECT_TRUE(
+            store.contains("D")
+        );
+
+        EXPECT_EQ(
+            store.size(),
+            3U
+        );
+    }
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, LoadRespectsConfiguredCapacity) {
+    const std::string filename =
+        "test_capacity.cache";
+
+    {
+        KeyValueStore source;
+
+        source.set("A", "100");
+        source.set("B", "200");
+        source.set("C", "300");
+        source.set("D", "400");
+        source.set("E", "500");
+
+        ASSERT_TRUE(
+            source.save(filename)
+        );
+    }
+
+    {
+        KeyValueStore store(3);
+
+        ASSERT_TRUE(
+            store.load(filename)
+        );
+
+        EXPECT_EQ(
+            store.size(),
+            3U
+        );
+
+        EXPECT_FALSE(
+            store.contains("A")
+        );
+
+        EXPECT_FALSE(
+            store.contains("B")
+        );
+
+        EXPECT_TRUE(
+            store.contains("C")
+        );
+
+        EXPECT_TRUE(
+            store.contains("D")
+        );
+
+        EXPECT_TRUE(
+            store.contains("E")
+        );
+    }
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, TTLPersistsAcrossSaveAndLoad) {
+    const std::string filename =
+        "test_ttl.cache";
+
+    {
+        KeyValueStore store;
+
+        store.set_with_ttl(
+            "session",
+            "abc123",
+            std::chrono::seconds(3)
+        );
+
+        ASSERT_TRUE(
+            store.save(filename)
+        );
+    }
+
+    // Simulate CacheForge being stopped
+    // for approximately one second.
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1100)
+    );
+
+    {
+        KeyValueStore store;
+
+        ASSERT_TRUE(
+            store.load(filename)
+        );
+
+        // Roughly two seconds of the original
+        // TTL should still remain.
+        EXPECT_TRUE(
+            store.contains("session")
+        );
+
+        auto value =
+            store.get("session");
+
+        ASSERT_TRUE(
+            value.has_value()
+        );
+
+        EXPECT_EQ(
+            value.value(),
+            "abc123"
+        );
+
+        // Wait beyond the remaining TTL.
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(2100)
+        );
+
+        EXPECT_FALSE(
+            store.contains("session")
+        );
+    }
+
+    std::remove(
+        filename.c_str()
+    );
+}
+
+TEST(KeyValueStoreTest, TTLCanExpireWhileCacheIsStopped) {
+    const std::string filename =
+        "test_ttl_expired.cache";
+
+    {
+        KeyValueStore store;
+
+        store.set_with_ttl(
+            "temporary",
+            "value",
+            std::chrono::seconds(1)
+        );
+
+        ASSERT_TRUE(
+            store.save(filename)
+        );
+    }
+
+    // Simulate CacheForge being stopped
+    // longer than the remaining TTL.
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(1100)
+    );
+
+    {
+        KeyValueStore store;
+
+        ASSERT_TRUE(
+            store.load(filename)
+        );
+
+        EXPECT_FALSE(
+            store.contains("temporary")
+        );
+
+        EXPECT_EQ(
+            store.size(),
+            0U
+        );
+    }
+
+    std::remove(
+        filename.c_str()
     );
 }

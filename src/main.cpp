@@ -9,14 +9,7 @@ int main() {
     cacheforge::KeyValueStore store;
 
     std::cout << "CacheForge CLI\n";
-    std::cout << "Commands:\n";
-    std::cout << "  SET <key> <value>\n";
-    std::cout << "  SETEX <key> <ttl_seconds> <value>\n";
-    std::cout << "  GET <key>\n";
-    std::cout << "  DELETE <key>\n";
-    std::cout << "  EXISTS <key>\n";
-    std::cout << "  SIZE\n";
-    std::cout << "  EXIT\n\n";
+    std::cout << "Type HELP to see available commands.\n";
 
     std::string line;
 
@@ -32,14 +25,26 @@ int main() {
         std::string command;
         input >> command;
 
+        // -------------------------------------------------
+        // Ignore empty input
+        // -------------------------------------------------
+
+        if (command.empty()) {
+            continue;
+        }
+
+        // -------------------------------------------------
+        // SET <key> <value>
+        // -------------------------------------------------
+
         if (command == "SET") {
             std::string key;
             std::string value;
 
-            input >> key >> value;
+            if (!(input >> key >> value)) {
+                std::cout
+                    << "Usage: SET <key> <value>\n";
 
-            if (key.empty() || value.empty()) {
-                std::cout << "Usage: SET <key> <value>\n";
                 continue;
             }
 
@@ -48,19 +53,24 @@ int main() {
             std::cout << "OK\n";
         }
 
+        // -------------------------------------------------
+        // SETEX <key> <ttl_seconds> <value>
+        // -------------------------------------------------
+
         else if (command == "SETEX") {
             std::string key;
             std::string value;
-            long long ttl_seconds;
 
-            if (!(input >> key >> ttl_seconds >> value)) {
+            long long ttl_seconds = 0;
+
+            if (
+                !(input >> key >> ttl_seconds >> value)
+                || ttl_seconds <= 0
+            ) {
                 std::cout
-                    << "Usage: SETEX <key> <ttl_seconds> <value>\n";
-                continue;
-            }
+                    << "Usage: SETEX <key> "
+                    << "<ttl_seconds> <value>\n";
 
-            if (ttl_seconds <= 0) {
-                std::cout << "TTL must be greater than 0\n";
                 continue;
             }
 
@@ -73,72 +83,170 @@ int main() {
             std::cout << "OK\n";
         }
 
+        // -------------------------------------------------
+        // GET <key>
+        // -------------------------------------------------
+
         else if (command == "GET") {
             std::string key;
 
-            input >> key;
+            if (!(input >> key)) {
+                std::cout
+                    << "Usage: GET <key>\n";
 
-            if (key.empty()) {
-                std::cout << "Usage: GET <key>\n";
                 continue;
             }
 
-            auto value = store.get(key);
+            auto value =
+                store.get(key);
 
             if (value.has_value()) {
-                std::cout << value.value() << '\n';
+                std::cout
+                    << value.value()
+                    << '\n';
             } else {
-                std::cout << "NOT_FOUND\n";
+                std::cout
+                    << "NOT_FOUND\n";
             }
         }
+
+        // -------------------------------------------------
+        // DELETE <key>
+        // -------------------------------------------------
 
         else if (command == "DELETE") {
             std::string key;
 
-            input >> key;
+            if (!(input >> key)) {
+                std::cout
+                    << "Usage: DELETE <key>\n";
 
-            if (key.empty()) {
-                std::cout << "Usage: DELETE <key>\n";
                 continue;
             }
 
             if (store.remove(key)) {
-                std::cout << "DELETED\n";
+                std::cout << "OK\n";
             } else {
                 std::cout << "NOT_FOUND\n";
             }
         }
 
+        // -------------------------------------------------
+        // EXISTS <key>
+        // -------------------------------------------------
+
         else if (command == "EXISTS") {
             std::string key;
 
-            input >> key;
+            if (!(input >> key)) {
+                std::cout
+                    << "Usage: EXISTS <key>\n";
 
-            if (key.empty()) {
-                std::cout << "Usage: EXISTS <key>\n";
                 continue;
             }
 
             std::cout
-                << (store.contains(key) ? "true" : "false")
+                << (
+                    store.contains(key)
+                        ? "true"
+                        : "false"
+                )
                 << '\n';
         }
 
+        // -------------------------------------------------
+        // SIZE
+        // -------------------------------------------------
+
         else if (command == "SIZE") {
-            std::cout << store.size() << '\n';
+            std::cout
+                << store.size()
+                << '\n';
         }
 
-        else if (command == "EXIT") {
-            std::cout << "Goodbye.\n";
+        // -------------------------------------------------
+        // SAVE <filename>
+        // -------------------------------------------------
+
+        else if (command == "SAVE") {
+            std::string filename;
+
+            if (!(input >> filename)) {
+                std::cout
+                    << "Usage: SAVE <filename>\n";
+
+                continue;
+            }
+
+            if (store.save(filename)) {
+                std::cout << "OK\n";
+            } else {
+                std::cout << "ERROR\n";
+            }
+        }
+
+        // -------------------------------------------------
+        // LOAD <filename>
+        // -------------------------------------------------
+
+        else if (command == "LOAD") {
+            std::string filename;
+
+            if (!(input >> filename)) {
+                std::cout
+                    << "Usage: LOAD <filename>\n";
+
+                continue;
+            }
+
+            if (store.load(filename)) {
+                std::cout << "OK\n";
+            } else {
+                std::cout << "ERROR\n";
+            }
+        }
+
+        // -------------------------------------------------
+        // HELP
+        // -------------------------------------------------
+
+        else if (command == "HELP") {
+            std::cout
+                << "\nAvailable commands:\n"
+                << "  SET <key> <value>\n"
+                << "  SETEX <key> <ttl_seconds> <value>\n"
+                << "  GET <key>\n"
+                << "  DELETE <key>\n"
+                << "  EXISTS <key>\n"
+                << "  SIZE\n"
+                << "  SAVE <filename>\n"
+                << "  LOAD <filename>\n"
+                << "  HELP\n"
+                << "  EXIT\n\n";
+        }
+
+        // -------------------------------------------------
+        // EXIT
+        // -------------------------------------------------
+
+        else if (
+            command == "EXIT"
+            || command == "QUIT"
+        ) {
+            std::cout
+                << "Goodbye.\n";
+
             break;
         }
 
-        else if (command.empty()) {
-            continue;
-        }
+        // -------------------------------------------------
+        // Unknown command
+        // -------------------------------------------------
 
         else {
-            std::cout << "Unknown command\n";
+            std::cout
+                << "Unknown command. "
+                << "Type HELP for available commands.\n";
         }
     }
 
